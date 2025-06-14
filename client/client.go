@@ -100,7 +100,13 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				mut.Unlock()
 				return m, tea.Quit
 			} else {
-				m.conn.WriteMessage(websocket.TextMessage, []byte(outBoundMsg))
+				if (len(outBoundMsg) > 10 && outBoundMsg[:10] == "switch to ") ||
+					(outBoundMsg == "quit") || (outBoundMsg == "clear") {
+					msgOut = ""
+				}
+				if outBoundMsg != "clear" {
+					m.conn.WriteMessage(websocket.TextMessage, []byte(outBoundMsg))
+				}
 			}
 		case tea.KeyCtrlC:
 			mut.Lock()

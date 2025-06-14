@@ -7,19 +7,36 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/gorilla/websocket"
 )
 
-// func getInput(scanner *bufio.Scanner, c *websocket.Conn, res chan<- string) {
-// }
+var (
+	focusedStyle = lipgloss.NewStyle()
+)
 
-func getBroadcast(c *websocket.Conn) {
+type socketMsg string
+type socketErr error
+
+func getBroadcast(c *websocket.Conn) tea.Cmd {
 	for {
+		mut.Lock()
+		if quit {
+			fmt.Println("Exiting client")
+			return func() tea.Msg {
+				return socketMsg("Exiting client")
+			}
+		}
+		mut.Unlock()
 		m_type, data, err := c.ReadMessage()
 		if err != nil {
 			fmt.Println("Smt went wrong trying to read: ", err)
-			return
+			return func() tea.Msg {
+				return socketMsg(fmt.Sprintf("Smt went wrong trying to read: %s\n", err))
+			}
 		} else if m_type != websocket.TextMessage {
 			fmt.Println("Not a text message")
 			return
@@ -53,6 +70,9 @@ func fillHeader(header *http.Header) {
 	}
 }
 
+var quit bool
+var mut sync.Mutex
+
 func main() {
 	u := url.URL{Scheme: "ws", Host: "localhost:8080", Path: "ws"}
 	fmt.Println("Connecting to: ", u.String())
@@ -72,6 +92,7 @@ func main() {
 	//process inputs and read the output from the server here
 	go getBroadcast(c)
 	var msg string = ""
+	mut = sync.Mutex{}
 	for {
 		fmt.Print("> ")
 		for scanner.Scan() {
@@ -79,6 +100,12 @@ func main() {
 			readBuf <- msg
 			c.WriteMessage(websocket.TextMessage, []byte(msg))
 			c.WriteMessage(websocket.PingMessage, []byte(""))
+			if msg == "quit" {
+				mut.Lock()
+				quit = true
+				mut.Unlock()
+				return
+			}
 		}
 	}
 }

@@ -29,7 +29,6 @@ type focusState int
 // Lipgloss styles for each of the windows
 var (
 	msgViewStyle = lipgloss.NewStyle().
-			Align(lipgloss.Left).
 			Background(lipgloss.Color("#000"))
 
 	textInputStyle = lipgloss.NewStyle().
@@ -37,16 +36,24 @@ var (
 			Align(lipgloss.Left, lipgloss.Center).
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("69"))
+
+	roomListStyle = lipgloss.NewStyle().
+			Align(lipgloss.Left).
+			Width(10).
+			Foreground(lipgloss.Color("#966E8B"))
 )
 
 type mainModel struct {
-	textInput textinput.Model
-	msgLog    viewport.Model
-	focus     focusState
+	conn  *websocket.Conn
+	focus focusState
 
-	currentRoom string
-	messages    chan string
-	conn        *websocket.Conn
+	textInput textinput.Model
+
+	currentRoom    string
+	availableRooms []string
+
+	msgLog  viewport.Model
+	msgChan chan string
 }
 
 type socketMsg string
@@ -73,17 +80,17 @@ func initialModel(conn *websocket.Conn, room string) mainModel {
 	ti.Focus()
 
 	// create the viewport
-	vp := viewport.New(w, h-ti.Cursor.Style.GetHeight())
-	vp.MouseWheelEnabled = true
+	vp := viewport.New(0, h-ti.Cursor.Style.GetHeight())
+	vp.SetContent("Welcome to Aphasia!\nYou are currently connected to room %s, type a message and hit enter to chat")
 
-	vp.SetContent(lipgloss.NewStyle().Width(vp.Width).Render(fmt.Sprintf("Welcome to Aphasia!\nYou are currently connected to room %s, type a message and hit enter to chat", room)))
 	model := mainModel{
 		textInput:   ti,
 		focus:       inputFocus,
-		messages:    make(chan string, 256),
+		msgChan:     make(chan string, 256),
 		conn:        conn,
 		currentRoom: room,
 		msgLog:      vp,
+		// messages:    make([]string, 1000),
 	}
 
 	go getBroadcast(conn, model)
@@ -91,7 +98,6 @@ func initialModel(conn *websocket.Conn, room string) mainModel {
 }
 
 func (m mainModel) Init() tea.Cmd {
-	// return tea.Batch(getBroadcast(m.conn, m), textarea.Blink)
 	return tea.Batch(textarea.Blink, tea.SetWindowTitle("Aphasia"))
 }
 
@@ -125,10 +131,12 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			} else {
 				if (outBoundMsg == "quit") || (outBoundMsg == "clear") {
-					msgOut = ""
+					// msgOut = ""
+					messages = []string{}
 				} else if len(outBoundMsg) > 10 && outBoundMsg[:10] == "switch to " {
+					messages = []string{}
 					m.currentRoom = outBoundMsg[10:]
-					msgOut = ""
+					// msgOut = ""
 				}
 				if outBoundMsg != "clear" {
 					m.conn.WriteMessage(websocket.TextMessage, []byte(outBoundMsg))
@@ -161,16 +169,16 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-var msgOut string
+// var msgOut string
 
 func (m mainModel) View() string {
 	output := " Aphasia: The chatting service for people who can't (seriously, go touch grass)\n"
-
-	for range len(m.messages) {
-		msgOut += fmt.Sprint(<-m.messages) + "\n"
+	for range len(m.msgChan) {
+		tmp := <-m.msgChan
+		messages = append(messages, tmp)
 	}
-	m.msgLog.SetContent(lipgloss.NewStyle().Width(m.msgLog.Width).Render(msgOut))
-	// m.msgLog.SetContent(msgOut)
+	m.msgLog.SetContent(lipgloss.NewStyle().Width(m.msgLog.Width).Render(strings.Join(messages, "\n")))
+	// rooms := strings.Join(availableRooms, "\n")
 
 	if m.focus == inputFocus {
 		m.msgLog.Style = m.msgLog.Style.UnsetBackground()
@@ -180,9 +188,10 @@ func (m mainModel) View() string {
 	} else {
 		m.msgLog.Style = m.msgLog.Style.Background(lipgloss.Color("#000"))
 		msgViewStyle = msgViewStyle.Background(lipgloss.Color("#000"))
-
 		output += lipgloss.JoinVertical(lipgloss.Center, msgViewStyle.Render(m.msgLog.View()), textInputStyle.Render(m.textInput.View()))
 	}
+	// output += lipgloss.JoinVertical(lipgloss.Center, m.msgLog.View(), textInputStyle.Render(m.textInput.View()))
+	output = lipgloss.JoinHorizontal(lipgloss.Top, strings.Join(availableRooms, "\n"), output)
 	return output
 }
 
@@ -204,18 +213,21 @@ func getBroadcast(c *websocket.Conn, m mainModel) {
 		if err != nil {
 			fmt.Println("Smt went wrong trying to read: ", err)
 			return
+
 		} else if m_type != websocket.TextMessage {
-			fmt.Println("Not a text message")
-			return
-		} else {
-			if !roomsReceived {
+			if m_type == websocket.BinaryMessage {
 				rooms := strings.SplitSeq(string(data), "\n")
 				for room := range rooms {
 					availableRooms = append(availableRooms, room)
 				}
 			} else {
-				m.messages <- string(data)
+				fmt.Println("Not a text message")
 			}
+			return
+		} else {
+			//check if its the available rooms
+			// fmt.Println(string(data))
+			m.msgChan <- string(data)
 		}
 	}
 

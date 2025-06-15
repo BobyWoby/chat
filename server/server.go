@@ -42,23 +42,39 @@ func readPump(c *Client) {
 				str := string(msg)
 				if str == "quit" {
 					c.room.unregister <- c
+					break
+				} else if len(str) > 10 && str[:10] == "switch to " {
+					if room, ok := rooms[str[10:]]; ok {
+						c.room.unregister <- c
+						room.register <- c
+						c.room = *room
+					}
 				} else {
 					c.room.broadcast <- fmt.Appendf(nil, "%s: %s", c.name, string(msg))
 				}
 			}
 		} else {
 			fmt.Println("Read Error: ", err)
+			c.room.unregister <- c
 			break
 		}
 	}
 }
 
 // write to the client
+// to avoid any deadlock errors, or cases where there are multiple accesses of the writer
+// exclusively write through this function
 func writePump(c *Client) {
 	defer func() {
 		//close the connection if somethign goes wrong
 		c.conn.Close()
 	}()
+	//send the room data to the client
+	keys := ""
+	for room := range rooms {
+		keys += fmt.Sprintln(room)
+	}
+	c.conn.WriteMessage(websocket.BinaryMessage, []byte(keys))
 	for {
 		w, err := c.conn.NextWriter(websocket.TextMessage)
 		if err != nil {
@@ -91,11 +107,16 @@ func handleWs(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.Header.Get("name")
 	roomName := r.Header.Get("room")
-	fmt.Println(name, "has connected")
-	client := &Client{name: name, room: *rooms[roomName], conn: conn, send: make(chan []byte, 256)}
-	rooms[roomName].register <- client
-	go readPump(client)
-	go writePump(client)
+	if room, ok := rooms[roomName]; ok {
+		fmt.Println(name, "has connected")
+		client := &Client{name: name, room: *rooms[roomName], conn: conn, send: make(chan []byte, 256)}
+		room.register <- client
+		go readPump(client)
+		go writePump(client)
+	} else {
+		conn.WriteMessage(websocket.TextMessage, []byte("Not a valid Room!"))
+		return
+	}
 
 }
 func (room *Room) run() {
@@ -108,7 +129,6 @@ func (room *Room) run() {
 			fmt.Println(msg)
 			room.broadcast <- []byte(msg)
 			delete(room.clients, client)
-			close(client.send)
 
 		// if theres a client that needs to be unregistered, unregister them
 		case client := <-room.register:

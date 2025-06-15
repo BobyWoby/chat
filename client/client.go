@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -72,7 +73,8 @@ func initialModel(conn *websocket.Conn, room string) mainModel {
 	ti.Focus()
 
 	// create the viewport
-	vp := viewport.New(w, h-ti.Cursor.Style.GetHeight()-10)
+	vp := viewport.New(w, h-ti.Cursor.Style.GetHeight())
+	vp.MouseWheelEnabled = true
 
 	vp.SetContent(lipgloss.NewStyle().Width(vp.Width).Render(fmt.Sprintf("Welcome to Aphasia!\nYou are currently connected to room %s, type a message and hit enter to chat", room)))
 	model := mainModel{
@@ -97,6 +99,7 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var tiCmd tea.Cmd
 	var vpCmd tea.Cmd
 	m.textInput, tiCmd = m.textInput.Update(msg)
+
 	m.msgLog, vpCmd = m.msgLog.Update(msg)
 
 	var cmds []tea.Cmd
@@ -121,8 +124,10 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				mut.Unlock()
 				return m, tea.Quit
 			} else {
-				if (len(outBoundMsg) > 10 && outBoundMsg[:10] == "switch to ") ||
-					(outBoundMsg == "quit") || (outBoundMsg == "clear") {
+				if (outBoundMsg == "quit") || (outBoundMsg == "clear") {
+					msgOut = ""
+				} else if len(outBoundMsg) > 10 && outBoundMsg[:10] == "switch to " {
+					m.currentRoom = outBoundMsg[10:]
 					msgOut = ""
 				}
 				if outBoundMsg != "clear" {
@@ -134,6 +139,23 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			quit = true
 			mut.Unlock()
 			return m, tea.Quit
+		case tea.KeyRunes:
+			switch string(msgData.Runes) {
+			// case "j":
+			// 	if m.focus == msgFocus {
+			// 		content := m.msgLog.ScrollUp(1)
+			// 		m.msgLog.ScrollDown(1)
+			// 		m.msgLog.SetYOffset(m.msgLog.YOffset + 1)
+			// 		fmt.Println("scroll%: ", m.msgLog.ScrollPercent(), ", content: ", content, ", YOffset: ", m.msgLog.YOffset)
+			// 	}
+			// case "k":
+			// 	if m.focus == msgFocus {
+			// 		content := m.msgLog.ScrollUp(1)
+			// 		m.msgLog.SetYOffset(m.msgLog.YOffset - 1)
+			// 		fmt.Println(m.msgLog.TotalLineCount(), m.msgLog.Height, m.msgLog.Style.GetVerticalFrameSize())
+			// 		fmt.Println("scroll%: ", m.msgLog.ScrollPercent(), ", content: ", content, ", YOffset: ", m.msgLog.YOffset)
+			// 	}
+			}
 		}
 	}
 	return m, tea.Batch(cmds...)
@@ -145,31 +167,27 @@ func (m mainModel) View() string {
 	output := " Aphasia: The chatting service for people who can't (seriously, go touch grass)\n"
 
 	for range len(m.messages) {
-		msgOut += fmt.Sprintln(<-m.messages)
+		msgOut += fmt.Sprint(<-m.messages) + "\n"
 	}
 	m.msgLog.SetContent(lipgloss.NewStyle().Width(m.msgLog.Width).Render(msgOut))
-	m.msgLog.GotoBottom()
-	if m.focus == inputFocus {
-		// m.textInput.TextStyle = m.textInput.TextStyle.Background(lipgloss.Color("#000"))
-		// textInputStyle = textInputStyle.Background(lipgloss.Color("#000"))
+	// m.msgLog.SetContent(msgOut)
 
+	if m.focus == inputFocus {
 		m.msgLog.Style = m.msgLog.Style.UnsetBackground()
 		msgViewStyle = msgViewStyle.UnsetBackground()
-
+		m.msgLog.GotoBottom()
 		output += lipgloss.JoinVertical(lipgloss.Center, msgViewStyle.Render(m.msgLog.View()), textInputStyle.Render(m.textInput.View()))
-		// output += lipgloss.JoinVertical(lipgloss.Center, msgViewStyle.Render(msgOut), textInputStyle.Render(m.textInput.View()))
 	} else {
-		// m.textInput.TextStyle = m.textInput.TextStyle.UnsetBackground()
-		// textInputStyle = textInputStyle.UnsetBackground()
-
 		m.msgLog.Style = m.msgLog.Style.Background(lipgloss.Color("#000"))
 		msgViewStyle = msgViewStyle.Background(lipgloss.Color("#000"))
 
 		output += lipgloss.JoinVertical(lipgloss.Center, msgViewStyle.Render(m.msgLog.View()), textInputStyle.Render(m.textInput.View()))
-		// output += lipgloss.JoinVertical(lipgloss.Center, msgViewStyle.Render(msgOut), textInputStyle.Render(m.textInput.View()))
 	}
 	return output
 }
+
+var roomsReceived bool
+var availableRooms []string
 
 func getBroadcast(c *websocket.Conn, m mainModel) {
 	defer func() {
@@ -190,7 +208,14 @@ func getBroadcast(c *websocket.Conn, m mainModel) {
 			fmt.Println("Not a text message")
 			return
 		} else {
-			m.messages <- string(data)
+			if !roomsReceived {
+				rooms := strings.SplitSeq(string(data), "\n")
+				for room := range rooms {
+					availableRooms = append(availableRooms, room)
+				}
+			} else {
+				m.messages <- string(data)
+			}
 		}
 	}
 
@@ -229,7 +254,7 @@ func main() {
 		return
 	}
 	textInputStyle = textInputStyle.Width(w - 3).Height(1)
-	msgViewStyle = msgViewStyle.Width(w - 3).Height(h - 4)
+	msgViewStyle = msgViewStyle.Width(w - 3).Height(h - 10).MaxHeight(h - textInputStyle.GetHeight() - 3)
 	u := url.URL{Scheme: "ws", Host: "localhost:8080", Path: "ws"}
 	fmt.Println("Connecting to: ", u.String())
 	header := http.Header{}
